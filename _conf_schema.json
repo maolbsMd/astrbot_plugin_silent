@@ -1,0 +1,8 @@
+{
+    "silent_tags": {
+        "description": "需要拦截的特殊标签",
+        "type": "list",
+        "hint": "填入你想拦截的字串，例如 <silent> 。按右側的 + 号可新增多个。",
+        "default": ["<silent>"]
+    }
+}

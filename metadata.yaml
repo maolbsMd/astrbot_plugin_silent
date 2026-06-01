@@ -1,0 +1,5 @@
+name: astrbot_plugin_silent
+display_name: 沉默控制插件
+version: 1.0.0
+author: maolbsMd
+desc: 使用正则表达式拦截含有指定字符的 LLM 回复，阻止消息发送。
