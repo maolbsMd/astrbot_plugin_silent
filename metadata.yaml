@@ -1,5 +1,11 @@
 name: astrbot_plugin_smart_silence
-display_name: 沉默控制插件
+display_name: 智慧沉默控制 Pro
 version: 1.0.0
 author: maolbsMd
-desc: 使用正则表达式拦截含有指定字符的 LLM 回复，阻止消息发送。
+desc: 轻量且强大的沉默控制，让 bot 拥有自主决定权，支持外部配置与主动发信拦截机制。
+repo: https://github.com/maolbsMd/astrbot_plugin_smart_silence
+tags:
+  - 沉默
+  - 功能增强
+  - 拟人
+  - 主动拦截
