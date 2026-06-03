@@ -1,6 +1,7 @@
 import re
 import json
 import time
+from typing import Any, Iterable
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api.provider import LLMResponse
@@ -51,19 +52,21 @@ class SmartSilencePlugin(Star):
             if current_mtime != self._last_mtime:
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     config = json.load(f)
-                    tags = config.get("silent_tags", self.silent_tags)
+                    raw_tags = config.get("silent_tags", self.silent_tags)
                     
-                    if not isinstance(tags, list):
+                    if not isinstance(raw_tags, list):
                         logger.warning("[Smart Silence] 配置格式錯誤：silent_tags 必須是列表格式。將使用上次的快取或預設值。")
                         return self._cached_pattern
                         
-                    if tags:
-                        pattern_str = "|".join(map(re.escape, tags))
+                    # 過濾空字串與純空白字元，防止生成會攔截所有訊息的正則表達式
+                    valid_tags = [t.strip() for t in raw_tags if t and t.strip()]
+                    
+                    if valid_tags:
+                        pattern_str = "|".join(map(re.escape, valid_tags))
                         self._cached_pattern = re.compile(pattern_str)
                     else:
                         self._cached_pattern = None
                         
-                # 只有在讀取、解析、編譯全部成功後，才更新 mtime 狀態標記
                 self._last_mtime = current_mtime
                 logger.debug("[Smart Silence] 配置已更新，重新編譯正則表達式。")
                 
@@ -76,11 +79,23 @@ class SmartSilencePlugin(Star):
             
         return self._cached_pattern
 
-    def _extract_text_from_chain(self, chain):
-        """封裝相容性防禦邏輯，提供統一的訊息鏈轉純文字介面"""
-        if hasattr(chain, 'to_text'):
+    def _extract_text_from_chain(self, chain: Iterable[Any]) -> str:
+        """封裝相容性防禦邏輯，遍歷訊息鏈提取純文字"""
+        # 如果 chain 自身帶有轉換文字的方法，優先呼叫
+        if hasattr(chain, 'to_text') and callable(getattr(chain, 'to_text')):
             return chain.to_text()
-        return str(chain)
+        
+        # 安全地遍歷列表，提取有效文字
+        text_parts = []
+        for component in chain:
+            # 大部分 AstrBot 的文字組件會將文字儲存在 text 屬性中
+            if hasattr(component, 'text'):
+                text_parts.append(str(component.text))
+            else:
+                # 若無 text 屬性，則將組件自身轉為字串
+                text_parts.append(str(component))
+                
+        return "".join(text_parts)
 
     @filter.on_llm_response(priority=1)
     async def on_llm_resp(self, event: AstrMessageEvent, resp: LLMResponse):
@@ -92,7 +107,6 @@ class SmartSilencePlugin(Star):
             return
 
         if current_pattern.search(resp.completion_text):
-            # 降級為 debug 日誌，維持終端機的整潔與優雅
             logger.debug("[Smart Silence] (LLM 攔截) 檢測到攔截標籤，已阻止一般訊息發送。")
             resp.completion_text = ""
 
@@ -105,11 +119,9 @@ class SmartSilencePlugin(Star):
         result = event.get_result()
         
         if result and hasattr(result, 'chain') and len(result.chain) > 0:
-            # 呼叫封裝好的乾淨方法
             message_text = self._extract_text_from_chain(result.chain)
             
             if current_pattern.search(message_text):
-                # 降級為 debug 日誌
                 logger.debug("[Smart Silence] (最終攔截) 檢測到主動發送的攔截標籤，已清空訊息鏈。")
                 result.chain.clear()
                 event.stop_event()
