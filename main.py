@@ -49,8 +49,6 @@ class SmartSilencePlugin(Star):
             current_mtime = self.config_path.stat().st_mtime
             
             if current_mtime != self._last_mtime:
-                self._last_mtime = current_mtime
-                
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     config = json.load(f)
                     tags = config.get("silent_tags", self.silent_tags)
@@ -65,6 +63,8 @@ class SmartSilencePlugin(Star):
                     else:
                         self._cached_pattern = None
                         
+                # 只有在讀取、解析、編譯全部成功後，才更新 mtime 狀態標記
+                self._last_mtime = current_mtime
                 logger.debug("[Smart Silence] 配置已更新，重新編譯正則表達式。")
                 
         except json.JSONDecodeError:
@@ -76,6 +76,12 @@ class SmartSilencePlugin(Star):
             
         return self._cached_pattern
 
+    def _extract_text_from_chain(self, chain):
+        """封裝相容性防禦邏輯，提供統一的訊息鏈轉純文字介面"""
+        if hasattr(chain, 'to_text'):
+            return chain.to_text()
+        return str(chain)
+
     @filter.on_llm_response(priority=1)
     async def on_llm_resp(self, event: AstrMessageEvent, resp: LLMResponse):
         if not resp or not resp.completion_text:
@@ -86,7 +92,8 @@ class SmartSilencePlugin(Star):
             return
 
         if current_pattern.search(resp.completion_text):
-            logger.info("[Smart Silence] (LLM 攔截) 檢測到攔截標籤，已阻止一般訊息發送。")
+            # 降級為 debug 日誌，維持終端機的整潔與優雅
+            logger.debug("[Smart Silence] (LLM 攔截) 檢測到攔截標籤，已阻止一般訊息發送。")
             resp.completion_text = ""
 
     @filter.on_decorating_result(priority=1)
@@ -98,9 +105,11 @@ class SmartSilencePlugin(Star):
         result = event.get_result()
         
         if result and hasattr(result, 'chain') and len(result.chain) > 0:
-            message_text = result.chain.to_text() if hasattr(result.chain, 'to_text') else str(result.chain)
+            # 呼叫封裝好的乾淨方法
+            message_text = self._extract_text_from_chain(result.chain)
             
             if current_pattern.search(message_text):
-                logger.info("[Smart Silence] (最終攔截) 檢測到主動發送的攔截標籤，已清空訊息鏈。")
+                # 降級為 debug 日誌
+                logger.debug("[Smart Silence] (最終攔截) 檢測到主動發送的攔截標籤，已清空訊息鏈。")
                 result.chain.clear()
                 event.stop_event()
