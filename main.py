@@ -19,13 +19,11 @@ class SmartSilencePlugin(Star):
         
         self.silent_tags = ["<silent>"] 
         
-        # 型別一致性：使用 0.0 來對應 float 類型的時間
         self._cached_pattern: Optional[re.Pattern] = None
         self._last_mtime: float = 0.0
         self._last_check_time: float = 0.0
         self._check_interval: float = 5.0 
         
-        # 引入非同步鎖，防止高併發下的競態條件
         self._lock = asyncio.Lock()
         
         self._ensure_config_exists()
@@ -42,7 +40,6 @@ class SmartSilencePlugin(Star):
                 logger.exception("[Smart Silence] 自動創建配置文件時發生未知錯誤")
 
     def _is_file_modified(self) -> bool:
-        """單一職責：僅負責檢查配置檔案的修改時間是否變動"""
         if not self.config_path.exists():
             return False
             
@@ -57,7 +54,6 @@ class SmartSilencePlugin(Star):
         return False
 
     def _load_and_compile(self):
-        """單一職責：僅負責讀取 JSON 並編譯正則表達式"""
         try:
             with open(self.config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
@@ -85,32 +81,24 @@ class SmartSilencePlugin(Star):
             logger.exception("[Smart Silence] 實時讀取配置時發生未知錯誤")
 
     async def get_current_pattern(self) -> Optional[re.Pattern]:
-        """主入口：負責併發控制與緩存時間邏輯"""
-        # 使用 time.monotonic() 確保時間不受系統時鐘回撥影響
         current_time = time.monotonic()
         
-        # 第一層檢查 (無鎖)：如果還在冷卻時間內，直接返回快取，提升效能
         if current_time - self._last_check_time < self._check_interval:
             return self._cached_pattern
             
-        # 獲取鎖，保護共享狀態
         async with self._lock:
-            # 雙重檢查鎖定模式 (Double-checked locking)：防止等待鎖的期間被其他任務更新
             current_time = time.monotonic()
             if current_time - self._last_check_time < self._check_interval:
                 return self._cached_pattern
                 
-            # 更新檢查時間
             self._last_check_time = current_time
             
-            # 若檔案被修改過，才執行讀取與編譯
             if self._is_file_modified():
                 self._load_and_compile()
                 
         return self._cached_pattern
 
     def _extract_text_from_chain(self, chain: Iterable[Any]) -> str:
-        """封裝相容性防禦邏輯，遍歷訊息鏈提取純文字"""
         if hasattr(chain, 'to_text') and callable(getattr(chain, 'to_text')):
             return chain.to_text()
         
@@ -128,6 +116,26 @@ class SmartSilencePlugin(Star):
         if not resp or not resp.completion_text:
             return
 
-        # 這裡必須加上 await，因為 get_current_pattern 已升級為非同步方法
         current_pattern = await self.get_current_pattern()
-        if not current_pattern
+        if not current_pattern:
+            return
+
+        if current_pattern.search(resp.completion_text):
+            logger.debug("[Smart Silence] (LLM 攔截) 檢測到攔截標籤，已阻止一般訊息發送。")
+            resp.completion_text = ""
+
+    @filter.on_decorating_result(priority=1)
+    async def on_decorating_result(self, event: AstrMessageEvent):
+        current_pattern = await self.get_current_pattern()
+        if not current_pattern:
+            return
+            
+        result = event.get_result()
+        
+        if result and hasattr(result, 'chain') and len(result.chain) > 0:
+            message_text = self._extract_text_from_chain(result.chain)
+            
+            if current_pattern.search(message_text):
+                logger.debug("[Smart Silence] (最終攔截) 檢測到主動發送的攔截標籤，已清空訊息鏈。")
+                result.chain.clear()
+                event.stop_event()
